@@ -1,0 +1,5 @@
+venv/
+.venv/
+__pycache__/
+datos.xlsx
+resultado_procesado.xlsx
