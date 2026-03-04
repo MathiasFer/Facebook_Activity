@@ -24,36 +24,41 @@ class SocialinsiderAnalyzer:
             print("🌐 Abriendo Socialinsider...")
             await page.goto(
                 "https://www.socialinsider.io/es/herramientas-gratuitas/herramientas-informes-redes-sociales/facebook-audit",
-                wait_until="domcontentloaded",
+                wait_until="networkidle",
             )
+            await page.wait_for_timeout(2000)
 
             # ----------------------------
-            # 1️⃣ Escribir URL
+            # 1️⃣ Función interna para ingresar URL
             # ----------------------------
-            input_selector = "input[formcontrolname='profileInput']"
-            await page.wait_for_selector(input_selector)
+            async def ingresar_url(url_to_analyze):
+                input_selector = "input[formcontrolname='profileInput']"
+                await page.wait_for_selector(input_selector)
 
-            print("✏ Escribiendo URL...")
-            await page.click(input_selector)
-            await page.keyboard.type(facebook_url, delay=40)
+                print("✏ Limpiando e ingresando URL...")
+                await page.click(input_selector)
+                await page.fill(input_selector, "")
+                await page.wait_for_timeout(500)
+                await page.type(input_selector, url_to_analyze, delay=50)
 
-            # ----------------------------
-            # 2️⃣ Esperar botón habilitado
-            # ----------------------------
-            await page.wait_for_function(
+                # Esperar botón habilitado
+                await page.wait_for_function(
+                    """
+                    () => {
+                        const btn = document.querySelector("button[type='submit']");
+                        return btn && !btn.disabled;
+                    }
                 """
-                () => {
-                    const btn = document.querySelector("button[type='submit']");
-                    return btn && !btn.disabled;
-                }
-            """
-            )
+                )
 
-            print("🚀 Click en Check...")
-            await page.locator("button[type='submit']").click(force=True)
+                print("🚀 Click en Check...")
+                await page.locator("button[type='submit']").click(force=True)
+
+            # Primer ingreso de URL
+            await ingresar_url(facebook_url)
 
             # ----------------------------
-            # 3️⃣ Detectar resultado
+            # 2️⃣ Detectar resultado de estado (una sola vez al inicio)
             # ----------------------------
 
             try:
@@ -80,75 +85,78 @@ class SocialinsiderAnalyzer:
                 pass
 
             # ----------------------------
-            # 4️⃣ Si no fue ninguno → Hay análisis
+            # 3️⃣ Intento de carga de análisis (Máximo 2 intentos)
             # ----------------------------
-
-            print("📊 Buscando bloque de análisis...")
 
             analysis_selector = (
                 "div.grid.grid-cols-1.si-tablet-and-mobile\\:grid-cols-12"
             )
+            
+            for intento in range(1, 3):
+                print(f"📊 Buscando bloque de análisis (Intento {intento}/2)...")
+                try:
+                    await page.wait_for_selector(analysis_selector, timeout=10000)
+                    
+                    # Si llega aquí, el selector se encontró
+                    # Scroll para asegurar carga completa
+                    await page.mouse.wheel(0, 1500)
+                    await page.wait_for_timeout(2000)
 
-            await page.wait_for_selector(analysis_selector, timeout=10000)
+                    # Extraer ambos bloques (Contenido + Engagement)
+                    blocks = page.locator(analysis_selector)
+                    count = await blocks.count()
 
-            # Scroll para asegurar carga completa
-            await page.mouse.wheel(0, 1500)
-            await page.wait_for_timeout(2000)
+                    analysis_text_raw = []
+                    for i in range(count):
+                        text = await blocks.nth(i).inner_text()
+                        analysis_text_raw.append(text)
 
-            # Extraer ambos bloques (Contenido + Engagement)
-            blocks = page.locator(analysis_selector)
-            count = await blocks.count()
+                    full_text = "\n".join(analysis_text_raw)
 
-            analysis_text_raw = []
+                    # Extraer números
+                    numbers = re.findall(r"\d+\.?\d*", full_text)
 
-            for i in range(count):
-                text = await blocks.nth(i).inner_text()
-                analysis_text_raw.append(text)
+                    if len(numbers) >= 4:
+                        total_posts = int(float(numbers[0]))
+                        avg_posts_per_day = float(numbers[1])
+                        engagement_total = int(float(numbers[2]))
+                        avg_engagement = float(numbers[3])
+                    else:
+                        total_posts = 0
+                        avg_posts_per_day = 0
+                        engagement_total = 0
+                        avg_engagement = 0
 
-            full_text = "\n".join(analysis_text_raw)
+                    if avg_posts_per_day >= 0.23:
+                        activity_level = "alta"
+                    elif 0.10 <= avg_posts_per_day < 0.23:
+                        activity_level = "media"
+                    elif 0.03 <= avg_posts_per_day < 0.10:
+                        activity_level = "baja"
+                    else:
+                        activity_level = "inactiva"
 
-            # -----------------------------
-            # Extraer números correctamente
-            # -----------------------------
+                    print("✅ Página activa detectada")
+                    await browser.close()
 
-            numbers = re.findall(r"\d+\.?\d*", full_text)
+                    return {
+                        "status": "activa",
+                        "total_posts_30d": total_posts,
+                        "avg_posts_per_day": avg_posts_per_day,
+                        "engagement_total": engagement_total,
+                        "avg_engagement": avg_engagement,
+                        "nivel_actividad": activity_level,
+                    }
 
-            # Esperado:
-            # [131, 4.37, 1729, 13.2]
+                except PlaywrightTimeout:
+                    if intento == 1:
+                        print("⏳ Timeout en intento 1. Recargando y reintentando submission...")
+                        await page.reload(wait_until="networkidle")
+                        await page.wait_for_timeout(2000)
+                        # Repetir proceso de ingreso
+                        await ingresar_url(facebook_url)
+                    else:
+                        print("❌ Fallaron los 2 intentos de carga.")
+                        await browser.close()
+                        return {"status": "error"}
 
-            if len(numbers) >= 4:
-                total_posts = int(float(numbers[0]))
-                avg_posts_per_day = float(numbers[1])
-                engagement_total = int(float(numbers[2]))
-                avg_engagement = float(numbers[3])
-            else:
-                total_posts = 0
-                avg_posts_per_day = 0
-                engagement_total = 0
-                avg_engagement = 0
-
-            # -----------------------------
-            # Clasificación de actividad
-            # -----------------------------
-
-            if avg_posts_per_day >= 0.23:
-                activity_level = "alta"
-            elif 0.10 <= avg_posts_per_day < 0.23:
-                activity_level = "media"
-            elif 0.03 <= avg_posts_per_day < 0.10:
-                activity_level = "baja"
-            else:
-                activity_level = "inactiva"
-
-            print("✅ Página activa detectada")
-
-            await browser.close()
-
-            return {
-                "status": "activa",
-                "total_posts_30d": total_posts,
-                "avg_posts_per_day": avg_posts_per_day,
-                "engagement_total": engagement_total,
-                "avg_engagement": avg_engagement,
-                "nivel_actividad": activity_level,
-            }
